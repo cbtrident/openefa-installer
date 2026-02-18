@@ -5,6 +5,7 @@ Tracks normal sender behavior and detects account compromise indicators
 Extends the existing conversation learning system
 """
 
+import os
 import json
 import logging
 from datetime import datetime, timedelta
@@ -58,7 +59,8 @@ class BehavioralBaseline:
                         config[key.strip()] = value.strip().strip('"')
 
             # Create database connection
-            connection_string = f"mysql+pymysql://{config.get('user', 'spacy_user')}:{config.get('password', '')}@localhost/spacy_email_db"
+            db_name = config.get('database', os.getenv('DB_NAME', 'spacy_email_db'))
+            connection_string = f"mysql+pymysql://{config.get('user', 'spacy_user')}:{config.get('password', '')}@localhost/{db_name}"
             self.engine = create_engine(
                 connection_string,
                 pool_size=5,
@@ -278,7 +280,7 @@ class BehavioralBaseline:
         """
 
         if not self.session:
-            return {'anomalies': [], 'risk_score': 0, 'should_flag': False}
+            return {'anomalies': [], 'risk_score': 0, 'should_flag': False, 'should_quarantine': False}
 
         anomalies = []
         risk_score = 0
@@ -286,7 +288,7 @@ class BehavioralBaseline:
         try:
             sender_email = email_data.get('from', '').lower()
             if not sender_email or '@' not in sender_email:
-                return {'anomalies': [], 'risk_score': 0, 'should_flag': False}
+                return {'anomalies': [], 'risk_score': 0, 'should_flag': False, 'should_quarantine': False}
 
             # Get sender's baseline
             baseline = self.session.execute(
@@ -299,11 +301,11 @@ class BehavioralBaseline:
 
             if not baseline:
                 # No baseline yet, can't detect anomalies
-                return {'anomalies': [], 'risk_score': 0, 'should_flag': False}
+                return {'anomalies': [], 'risk_score': 0, 'should_flag': False, 'should_quarantine': False}
 
             # Only check anomalies if we have enough data
             if baseline.learning_confidence < 0.3:
-                return {'anomalies': [], 'risk_score': 0, 'should_flag': False}
+                return {'anomalies': [], 'risk_score': 0, 'should_flag': False, 'should_quarantine': False}
 
             # Check time anomaly
             time_anomaly = self._check_time_anomaly(baseline)
@@ -343,7 +345,7 @@ class BehavioralBaseline:
 
         except Exception as e:
             logger.error(f"Failed to check anomalies: {e}")
-            return {'anomalies': [], 'risk_score': 0, 'should_flag': False}
+            return {'anomalies': [], 'risk_score': 0, 'should_flag': False, 'should_quarantine': False}
 
     def _check_time_anomaly(self, baseline: Any) -> Optional[Dict]:
         """Check if email sent at unusual time"""

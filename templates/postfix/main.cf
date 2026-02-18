@@ -27,7 +27,8 @@ mydestination = localhost, $myhostname, localhost.$mydomain
 # Network Access
 mynetworks = 127.0.0.0/8
 inet_interfaces = all
-inet_protocols = ipv4
+# IPv4 only by default. Change to 'all' for dual-stack (IPv4+IPv6)
+inet_protocols = all
 
 # Aliases
 alias_database = hash:/etc/aliases

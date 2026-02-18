@@ -40,6 +40,14 @@ copy_module_files() {
         debug "Copied: email_filter.py"
     fi
 
+    # Copy notification_service.py (SMS notification service)
+    if [[ -f "${source_dir}/notification_service.py" ]]; then
+        cp "${source_dir}/notification_service.py" "${install_dir}/"
+        chown spacy-filter:spacy-filter "${install_dir}/notification_service.py"
+        chmod 750 "${install_dir}/notification_service.py"
+        debug "Copied: notification_service.py"
+    fi
+
     # Copy VERSION file for system information display
     if [[ -f "${SCRIPT_DIR}/VERSION" ]]; then
         cp "${SCRIPT_DIR}/VERSION" "${install_dir}/"
@@ -103,6 +111,10 @@ copy_module_files() {
         chmod -R 750 "${install_dir}/tools"/*.sh
         debug "Copied: tools/*"
     fi
+
+    # Ensure main directory has correct ownership
+    chown spacy-filter:spacy-filter "${install_dir}"
+    chmod 750 "${install_dir}"
 
     success "Module files copied"
     return 0
@@ -193,19 +205,26 @@ update_hosted_domains() {
     fi
     domains_python+="]"
 
-    # Update HOSTED_DOMAINS in app.py (handle multi-line format)
-    if grep -q "^HOSTED_DOMAINS = \[" "${app_file}"; then
-        # Find the line number of HOSTED_DOMAINS = [
-        local start_line=$(grep -n "^HOSTED_DOMAINS = \[" "${app_file}" | cut -d: -f1)
-        # Find the closing ] (next line that starts with ])
-        local end_line=$(tail -n +${start_line} "${app_file}" | grep -n "^\]" | head -1 | cut -d: -f1)
-        end_line=$((start_line + end_line - 1))
+    # Update HOSTED_DOMAINS in app.py
+    if grep -q "^HOSTED_DOMAINS = " "${app_file}"; then
+        # Find the line number of HOSTED_DOMAINS
+        local hosted_line=$(grep -n "^HOSTED_DOMAINS = " "${app_file}" | head -1 | cut -d: -f1)
 
-        # Delete the old HOSTED_DOMAINS block
-        sed -i "${start_line},${end_line}d" "${app_file}"
+        # Check if it's a single-line definition (contains both [ and ] on same line)
+        if grep "^HOSTED_DOMAINS = \[.*\]" "${app_file}" > /dev/null; then
+            # Single-line format - just replace the line
+            sed -i "${hosted_line}s/.*/HOSTED_DOMAINS = ${domains_python}/" "${app_file}"
+        else
+            # Multi-line format - find closing bracket
+            local end_line=$(tail -n +${hosted_line} "${app_file}" | grep -n "^\]" | head -1 | cut -d: -f1)
+            end_line=$((hosted_line + end_line - 1))
 
-        # Insert new HOSTED_DOMAINS on single line
-        sed -i "${start_line}i\\HOSTED_DOMAINS = ${domains_python}" "${app_file}"
+            # Delete the old HOSTED_DOMAINS block
+            sed -i "${hosted_line},${end_line}d" "${app_file}"
+
+            # Insert new HOSTED_DOMAINS on single line
+            sed -i "${hosted_line}i\\HOSTED_DOMAINS = ${domains_python}" "${app_file}"
+        fi
 
         local domain_count=1
         if [[ -n "${INSTALL_DOMAINS[@]}" ]] && [[ ${#INSTALL_DOMAINS[@]} -gt 0 ]]; then
@@ -358,44 +377,55 @@ install_uninstall_script() {
 # Install GeoIP2 geographic blocking database (optional)
 #
 install_geoip2_database() {
-    local geoip_db="/opt/spacyserver/data/GeoLite2-Country.mmdb"
-    local geoip_url="https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-Country.mmdb"
+    local geoip_country_db="/opt/spacyserver/data/GeoLite2-Country.mmdb"
+    local geoip_city_db="/opt/spacyserver/data/GeoLite2-City.mmdb"
+    local geoip_country_url="https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-Country.mmdb"
+    local geoip_city_url="https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb"
 
     echo ""
-    info "GeoIP2 Geographic Blocking (Optional)"
+    info "GeoIP2 Geographic Analysis (Optional)"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "Enables country-based email blocking using IP geolocation."
+    echo "Enables geographic analysis and country-based email blocking."
     echo ""
     echo "Features:"
     echo "  • Block emails from high-risk countries (Russia, China, etc.)"
-    echo "  • Complementary to domain-based blocking"
-    echo "  • Uses free GeoLite2 database (9.5MB download)"
+    echo "  • Received chain geographic analysis"
+    echo "  • Uses free GeoLite2 databases (~70MB total download)"
     echo ""
     echo "Note: This is optional. System works without it."
     echo ""
 
-    if ! confirm "Enable GeoIP2 geographic blocking?"; then
+    if ! confirm "Enable GeoIP2 geographic analysis?"; then
         warn "Skipping GeoIP2 installation (can be enabled later)"
-        info "To enable later: Download GeoLite2-Country.mmdb to /opt/spacyserver/data/"
+        info "To enable later: Download GeoLite2 databases to /opt/spacyserver/data/"
         return 0
     fi
-
-    info "Downloading GeoLite2 database from community mirror..."
 
     # Create data directory if not exists
     create_directory "/opt/spacyserver/data" "spacy-filter:spacy-filter" "755"
 
-    # Download database
-    if wget -q --show-progress "${geoip_url}" -O "${geoip_db}"; then
-        chown spacy-filter:spacy-filter "${geoip_db}"
-        chmod 644 "${geoip_db}"
-        success "GeoIP2 database installed (9.5MB)"
-        info "Attribution: This product includes GeoLite2 data created by MaxMind"
-        info "Configure country blocking rules in SpacyWeb dashboard"
+    # Download Country database
+    info "Downloading GeoLite2-Country database (~10MB)..."
+    if wget -q --show-progress "${geoip_country_url}" -O "${geoip_country_db}"; then
+        chown spacy-filter:spacy-filter "${geoip_country_db}"
+        chmod 644 "${geoip_country_db}"
+        success "GeoLite2-Country database installed"
     else
-        warn "Failed to download GeoIP2 database (non-fatal)"
-        warn "You can manually install later if needed"
+        warn "Failed to download Country database (non-fatal)"
     fi
+
+    # Download City database
+    info "Downloading GeoLite2-City database (~60MB)..."
+    if wget -q --show-progress "${geoip_city_url}" -O "${geoip_city_db}"; then
+        chown spacy-filter:spacy-filter "${geoip_city_db}"
+        chmod 644 "${geoip_city_db}"
+        success "GeoLite2-City database installed"
+    else
+        warn "Failed to download City database (non-fatal)"
+    fi
+
+    info "Attribution: This product includes GeoLite2 data created by MaxMind"
+    info "Configure country blocking rules in SpacyWeb dashboard"
 
     return 0
 }

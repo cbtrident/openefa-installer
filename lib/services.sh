@@ -86,6 +86,12 @@ setup_db_processor_service() {
 setup_spacyweb_service() {
     section "Setting Up SpacyWeb Service"
 
+    # Create log directory for SpacyWeb
+    info "Creating SpacyWeb log directory..."
+    mkdir -p /var/log/spacyweb
+    chown spacy-filter:spacy-filter /var/log/spacyweb
+    chmod 755 /var/log/spacyweb
+
     install_service_file "spacyweb" || return 1
     systemctl daemon-reload
 
@@ -99,27 +105,10 @@ setup_spacyweb_service() {
 
 #
 # Install and start API services
+# Legacy EFA v5 API services - no longer needed
 #
 setup_api_services() {
-    section "Setting Up API Services"
-
-    local api_services=(
-        "spacy-release-api"
-        "spacy-whitelist-api"
-        "spacy-block-api"
-    )
-
-    for service in "${api_services[@]}"; do
-        install_service_file "${service}" || return 1
-    done
-
-    systemctl daemon-reload
-    sleep 2
-
-    for service in "${api_services[@]}"; do
-        enable_and_start_service "${service}" || return 1
-    done
-
+    info "API services setup skipped (legacy services removed)"
     save_state "api_services_configured"
     return 0
 }
@@ -171,6 +160,24 @@ setup_cleanup_cron() {
         crontab -u spacy-filter -
 
     success "Email cleanup cron job configured (daily at 2 AM)"
+    return 0
+}
+
+#
+# Configure cron job for permission fixes (handles root edits from Claude Code, etc.)
+#
+setup_permissions_cron() {
+    info "Configuring permissions fix cron job..."
+
+    # Create cron.d entry (runs as root at 1 AM daily)
+    cat > /etc/cron.d/openefa-permissions << 'EOF'
+# OpenEFA permission fix - repairs ownership after root edits
+# Runs daily at 1 AM
+0 1 * * * root /opt/spacyserver/scripts/fix_permissions.sh >/dev/null 2>&1
+EOF
+    chmod 644 /etc/cron.d/openefa-permissions
+
+    success "Permissions fix cron job configured (daily at 1 AM)"
     return 0
 }
 
@@ -253,6 +260,238 @@ fix_config_permissions() {
 }
 
 #
+# Setup Apache reverse proxy with SSL for SpacyWeb
+#
+setup_apache_ssl() {
+    section "Setting Up Apache Reverse Proxy with SSL"
+
+    local apache_template="${SCRIPT_DIR}/templates/apache/spacyweb.conf"
+    local apache_site="/etc/apache2/sites-available/spacyweb.conf"
+    local hostname="${INSTALL_HOSTNAME:-$(hostname -f)}"
+
+    # Enable required Apache modules
+    info "Enabling Apache modules..."
+    a2enmod ssl proxy proxy_http headers rewrite >/dev/null 2>&1 || {
+        warn "Some Apache modules may already be enabled"
+    }
+
+    echo ""
+    info "SSL Certificate Configuration"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    echo "Choose how to configure SSL for the SpacyWeb dashboard:"
+    echo ""
+    echo "  1) Let's Encrypt (Recommended for public servers)"
+    echo "     - Free, auto-renewing certificates"
+    echo "     - Requires domain pointing to this server"
+    echo ""
+    echo "  2) Self-signed certificate"
+    echo "     - Quick setup, works immediately"
+    echo "     - Browser will show security warning"
+    echo ""
+    echo "  3) Custom certificate"
+    echo "     - Use your own certificate files"
+    echo "     - For purchased/enterprise certs"
+    echo ""
+    echo "  4) Skip SSL setup"
+    echo "     - Configure manually later"
+    echo ""
+
+    local ssl_choice
+    read -p "Select option [1-4]: " ssl_choice
+
+    local ssl_cert_file=""
+    local ssl_key_file=""
+
+    case "${ssl_choice}" in
+        1)
+            # Let's Encrypt
+            info "Setting up Let's Encrypt certificate..."
+
+            local le_domain
+            read -p "Enter domain name (e.g., mail.example.com): " le_domain
+
+            if [[ -z "${le_domain}" ]]; then
+                warn "No domain provided, skipping Let's Encrypt"
+                return 0
+            fi
+
+            local le_email
+            read -p "Enter email for renewal notices (recommended): " le_email
+
+            # Ensure Apache is running for the challenge
+            info "Starting Apache for Let's Encrypt challenge..."
+            systemctl enable apache2 >/dev/null 2>&1
+            systemctl start apache2 >/dev/null 2>&1
+
+            # Build certbot command with or without email
+            local certbot_cmd="certbot certonly --apache -d ${le_domain} --non-interactive --agree-tos"
+            if [[ -n "${le_email}" ]]; then
+                certbot_cmd="${certbot_cmd} --email ${le_email}"
+            else
+                certbot_cmd="${certbot_cmd} --register-unsafely-without-email"
+                warn "No email provided - you won't receive renewal notices"
+            fi
+
+            # Run certbot
+            info "Requesting certificate from Let's Encrypt..."
+            if eval "${certbot_cmd}"; then
+                ssl_cert_file="/etc/letsencrypt/live/${le_domain}/fullchain.pem"
+                ssl_key_file="/etc/letsencrypt/live/${le_domain}/privkey.pem"
+                hostname="${le_domain}"
+                success "Let's Encrypt certificate obtained"
+            else
+                warn "Let's Encrypt failed - falling back to self-signed"
+                # Generate self-signed as fallback
+                mkdir -p /etc/ssl/spacyweb
+                openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+                    -keyout /etc/ssl/spacyweb/spacyweb.key \
+                    -out /etc/ssl/spacyweb/spacyweb.crt \
+                    -subj "/C=US/ST=State/L=City/O=OpenEFA/OU=SpacyWeb/CN=${le_domain}" \
+                    >/dev/null 2>&1
+                chmod 600 /etc/ssl/spacyweb/spacyweb.key
+                chmod 644 /etc/ssl/spacyweb/spacyweb.crt
+                ssl_cert_file="/etc/ssl/spacyweb/spacyweb.crt"
+                ssl_key_file="/etc/ssl/spacyweb/spacyweb.key"
+                hostname="${le_domain}"
+                warn "Using self-signed certificate instead"
+            fi
+            ;;
+        2)
+            # Self-signed certificate
+            info "Generating self-signed certificate..."
+
+            mkdir -p /etc/ssl/spacyweb
+
+            openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+                -keyout /etc/ssl/spacyweb/spacyweb.key \
+                -out /etc/ssl/spacyweb/spacyweb.crt \
+                -subj "/C=US/ST=State/L=City/O=OpenEFA/OU=SpacyWeb/CN=${hostname}" \
+                >/dev/null 2>&1
+
+            chmod 600 /etc/ssl/spacyweb/spacyweb.key
+            chmod 644 /etc/ssl/spacyweb/spacyweb.crt
+
+            ssl_cert_file="/etc/ssl/spacyweb/spacyweb.crt"
+            ssl_key_file="/etc/ssl/spacyweb/spacyweb.key"
+            success "Self-signed certificate generated"
+            warn "Browsers will show a security warning with self-signed certs"
+            ;;
+        3)
+            # Custom certificate
+            echo ""
+            read -p "Enter path to SSL certificate file: " ssl_cert_file
+            read -p "Enter path to SSL private key file: " ssl_key_file
+
+            if [[ ! -f "${ssl_cert_file}" ]] || [[ ! -f "${ssl_key_file}" ]]; then
+                error "Certificate files not found"
+                warn "Skipping SSL setup - configure manually"
+                return 0
+            fi
+            success "Using custom certificate"
+            ;;
+        4|*)
+            info "Setting up HTTP-only reverse proxy (no SSL)"
+
+            # Create HTTP-only Apache config
+            cat > "${apache_site}" << 'HTTPEOF'
+<VirtualHost *:80>
+    ServerName ${HOSTNAME}
+
+    # Security Headers
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set X-Frame-Options "SAMEORIGIN"
+    Header always set X-XSS-Protection "1; mode=block"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+
+    # Proxy to Gunicorn/SpacyWeb
+    ProxyPreserveHost On
+    ProxyPass / http://127.0.0.1:5500/
+    ProxyPassReverse / http://127.0.0.1:5500/
+
+    # Pass real client IP to backend
+    RequestHeader set X-Forwarded-For "%{REMOTE_ADDR}s"
+    RequestHeader set X-Forwarded-Proto "http"
+    RequestHeader set X-Forwarded-Host "%{HTTP_HOST}s"
+
+    # Logging
+    ErrorLog ${APACHE_LOG_DIR}/spacyweb-error.log
+    CustomLog ${APACHE_LOG_DIR}/spacyweb-access.log combined
+</VirtualHost>
+HTTPEOF
+            # Replace hostname placeholder
+            sed -i "s/\${HOSTNAME}/${hostname}/g" "${apache_site}"
+
+            # Enable modules and site
+            a2enmod proxy proxy_http headers >/dev/null 2>&1
+            a2dissite 000-default.conf >/dev/null 2>&1 || true
+            a2ensite spacyweb.conf >/dev/null 2>&1
+
+            # Restart Apache
+            systemctl enable apache2 >/dev/null 2>&1
+            systemctl restart apache2
+
+            if systemctl is-active --quiet apache2; then
+                success "Apache running with HTTP reverse proxy"
+                warn "SSL not configured - access via http://${hostname}"
+                info "To add SSL later, edit ${apache_site}"
+            else
+                error "Apache failed to start"
+                systemctl status apache2 --no-pager
+                return 1
+            fi
+
+            save_state "apache_ssl_configured"
+            return 0
+            ;;
+    esac
+
+    # Generate Apache config from template
+    if [[ -f "${apache_template}" ]]; then
+        sed -e "s|{{HOSTNAME}}|${hostname}|g" \
+            -e "s|{{SSL_CERT_FILE}}|${ssl_cert_file}|g" \
+            -e "s|{{SSL_KEY_FILE}}|${ssl_key_file}|g" \
+            "${apache_template}" > "${apache_site}"
+
+        success "Apache configuration created"
+    else
+        error "Apache template not found: ${apache_template}"
+        return 1
+    fi
+
+    # Disable default site, enable spacyweb
+    a2dissite 000-default.conf >/dev/null 2>&1 || true
+    a2ensite spacyweb.conf >/dev/null 2>&1
+
+    # Test Apache config
+    if apache2ctl configtest >/dev/null 2>&1; then
+        success "Apache configuration valid"
+    else
+        error "Apache configuration test failed"
+        apache2ctl configtest
+        return 1
+    fi
+
+    # Restart Apache
+    systemctl enable apache2 >/dev/null 2>&1
+    systemctl restart apache2
+
+    if systemctl is-active --quiet apache2; then
+        success "Apache running with SSL"
+        echo ""
+        info "SpacyWeb is now accessible at: https://${hostname}"
+        echo ""
+    else
+        error "Apache failed to start"
+        systemctl status apache2 --no-pager
+        return 1
+    fi
+
+    save_state "apache_ssl_configured"
+    return 0
+}
+
+#
 # Run all service setup steps
 #
 setup_services() {
@@ -263,9 +502,11 @@ setup_services() {
 
     setup_db_processor_service || return 1
     setup_spacyweb_service || return 1
+    setup_apache_ssl || warn "Apache SSL setup skipped or failed (non-fatal)"
     setup_api_services || return 1
     setup_logrotate || return 1
     setup_cleanup_cron || return 1
+    setup_permissions_cron || return 1
     fix_notification_permissions || return 1
     fix_config_permissions || return 1
 
@@ -276,5 +517,5 @@ setup_services() {
 
 # Export functions
 export -f install_service_file enable_and_start_service
-export -f setup_db_processor_service setup_spacyweb_service
-export -f setup_api_services setup_logrotate setup_cleanup_cron fix_notification_permissions fix_config_permissions setup_services
+export -f setup_db_processor_service setup_spacyweb_service setup_apache_ssl
+export -f setup_api_services setup_logrotate setup_cleanup_cron setup_permissions_cron fix_notification_permissions fix_config_permissions setup_services

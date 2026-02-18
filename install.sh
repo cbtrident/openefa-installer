@@ -3,7 +3,7 @@
 # install.sh - OpenEFA Email Security System Installer
 # Part of the OpenEFA project (https://openefa.com)
 #
-# Licensed under GPL - Successor to the EFA Project
+# Licensed under GPL v3 - Successor to the EFA Project
 # Copyright (C) 2025 OpenEFA Community
 #
 # This script performs a complete installation of OpenEFA including:
@@ -20,6 +20,12 @@ set -u  # Exit on undefined variable
 # Get script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Load version info
+if [[ -f "${SCRIPT_DIR}/VERSION" ]]; then
+    source "${SCRIPT_DIR}/VERSION"
+    export OPENEFA_VERSION="${VERSION:-1.6.1}"
+fi
+
 # Source all library functions
 source "${SCRIPT_DIR}/lib/common.sh"
 source "${SCRIPT_DIR}/lib/checks.sh"
@@ -32,6 +38,7 @@ source "${SCRIPT_DIR}/lib/modules.sh"
 source "${SCRIPT_DIR}/lib/services.sh"
 source "${SCRIPT_DIR}/lib/rollback.sh"
 source "${SCRIPT_DIR}/lib/validation.sh"
+source "${SCRIPT_DIR}/lib/security.sh"
 
 #
 # Main installation flow
@@ -82,6 +89,7 @@ main() {
         "configure_postfix:Configuring Postfix"
         "install_modules:Installing OpenSpacy modules"
         "setup_services:Setting up services"
+        "apply_security_hardening:Applying security hardening"
         "run_all_validations:Validating installation"
     )
 
@@ -128,7 +136,7 @@ main() {
         echo "OpenEFA Email Security System is now running!"
         echo ""
         echo "Access Information:"
-        echo "  • SpacyWeb Dashboard: https://$(hostname -f):5500"
+        echo "  • SpacyWeb Dashboard: https://$(hostname -f)"
         echo "  • Admin Username: ${ADMIN_USER}"
         echo "  • Admin Email: ${ADMIN_EMAIL}"
         echo ""
@@ -137,29 +145,21 @@ main() {
         echo ""
         echo "Services Running:"
         echo "  • Postfix (Mail Server)"
+        echo "  • Apache (Reverse Proxy with SSL)"
         echo "  • spacy-db-processor (Database Queue)"
-        echo "  • SpacyWeb (Dashboard - Port 5500)"
-        echo "  • Release API (Port 5001)"
-        echo "  • Whitelist API (Port 5002)"
-        echo "  • Block API (Port 5003)"
-        echo ""
-        echo "⚠️  CRITICAL - If using MailGuard/EFA downstream:"
-        echo "  Deploy SpamAssassin rules to your MailGuard/EFA server:"
-        echo ""
-        echo "  cd /opt/spacyserver/installer/templates/spamassassin"
-        echo "  scp *.cf root@YOUR_EFA_SERVER_IP:/etc/mail/spamassassin/"
-        echo "  ssh root@YOUR_EFA_SERVER_IP \"spamassassin --lint && systemctl restart mailscanner\""
-        echo ""
-        echo "  Without this, MailGuard will IGNORE OpenEFA's analysis!"
-        echo "  See: /opt/spacyserver/docs/EFA_SPAMASSASSIN_INTEGRATION.md"
+        echo "  • SpacyWeb (Dashboard via Gunicorn)"
         echo ""
         echo "Next Steps:"
         echo "  1. Update DNS MX records to point to this server"
-        echo "  2. Configure firewall to allow port 25 (SMTP) inbound"
+        echo "  2. Configure firewall to allow ports 25 (SMTP), 80 (HTTP), 443 (HTTPS)"
         echo "  3. Login to SpacyWeb to configure additional settings"
         echo "  4. Add whitelists and blocking rules as needed"
         echo "  5. Monitor logs: /opt/spacyserver/logs/"
-        echo "  6. Consider installing Let's Encrypt SSL certificate"
+        echo ""
+        echo "Security:"
+        echo "  • fail2ban is installed and protecting SSH/SMTP"
+        echo "  • Apache handles HTTPS with security headers"
+        echo "  • Review /etc/fail2ban/jail.local for customization"
         echo ""
         echo "Useful Commands:"
         echo "  • Check email logs: sudo tail -f /var/log/mail.log"
@@ -167,9 +167,9 @@ main() {
         echo "  • Service status: sudo systemctl status spacy-db-processor"
         echo "  • OpenSpacyMenu: sudo /opt/spacyserver/tools/OpenSpacyMenu"
         echo ""
-        echo "Optional:"
-        echo "  • Run efa_integration.sh to configure APIs on existing EFA appliance"
+        echo "Documentation:"
         echo "  • See README.md for detailed configuration guide"
+        echo "  • Review docs/ directory for additional guides"
         echo ""
         echo "Thank you for installing OpenEFA!"
         echo "Community: https://openefa.com | Forum: https://forum.openefa.com"
