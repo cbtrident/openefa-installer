@@ -2112,7 +2112,11 @@ def analyze_email_with_modules(msg: EmailMessage, text_content: str, from_header
                     # DNS expects msg and text_content
                     dns_results = dns_validator(msg, text_content)
                     if dns_results and isinstance(dns_results, dict) and 'dns_spam_score' in dns_results:
-                        dns_score = dns_results['dns_spam_score']
+                        dns_score = dns_results["dns_spam_score"]
+                        # Bypass DNS spoofing penalty if SPF+DKIM+DMARC all pass
+                        if dns_score >= 10.0 and email_data.get("spf_pass") and email_data.get("dkim_valid") and email_data.get("dmarc_pass"):
+                            safe_log(f"✅ DNS spoofing penalty bypassed - all authentication passed (was {dns_score})")
+                            dns_score = max(0.0, dns_score - 12.0)  # Remove spoofing penalty
                         analysis_results['spam_score'] += dns_score
                         if dns_score > 0:
                             analysis_results['spam_modules_detail']['dns'] = dns_score

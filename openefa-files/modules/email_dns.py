@@ -814,8 +814,15 @@ def analyze_dns(msg, text_content):
         # Calculate spam score based on reputation and spoofing
         dns_spam_score = 0.0
         
-        # Heavy penalty for spoofing
-        if spoofing_results.get('spoofing_detected'):
+        # Check authentication results - if SPF, DKIM, DMARC pass, reduce spoofing penalty
+        auth_results = msg.get("Authentication-Results", "").lower()
+        auth_passes = ("spf=pass" in auth_results and "dkim=pass" in auth_results and "dmarc=pass" in auth_results)
+        
+        # Heavy penalty for spoofing (but reduced if auth passes)
+        if spoofing_results.get("spoofing_detected") and auth_passes:
+            print(f"✅ DNS Spoofing detection bypassed - SPF/DKIM/DMARC all pass", file=sys.stderr)
+        
+        if spoofing_results.get("spoofing_detected") and not auth_passes:
             dns_spam_score += 10.0
             confidence = spoofing_results.get('spoofing_confidence', 0.0)
             if confidence > 0.7:

@@ -77,7 +77,7 @@ HOST = "localhost"
 # Centralized hosted domains configuration
 # This will be populated from database at startup via get_hosted_domains()
 # Updated during installation with configured domains
-HOSTED_DOMAINS = ['openefa.org']
+HOSTED_DOMAINS = ['zfssolution.co.uk']
 
 def get_hosted_domains():
     """
@@ -968,7 +968,12 @@ def get_raw_email_content(email):
             return None
 
     # Otherwise return from database (<=20MB emails)
-    return email.get('raw_email')
+    raw_email = email.get("raw_email")
+    # Fix escaped newlines (stored as literal \n instead of actual newlines)
+    if raw_email and isinstance(raw_email, str):
+        raw_email = raw_email.replace("\\r\\n", "\r\n").replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t")
+    return raw_email
+
 
 def extract_receiving_domains(recipients_string):
     """Extract unique domains from recipients string"""
@@ -3693,7 +3698,7 @@ def api_release_email(email_id):
                 if recipients:
                     first_recipient = recipients[0]
                     if '@' in first_recipient:
-                        recipient_domain = first_recipient.split('@')[1].lower()
+                        recipient_domain = first_recipient.split('@')[1].lower().rstrip('>').strip()
 
                 # Look up relay_host from client_domains table
                 relay_host = None
@@ -4022,7 +4027,7 @@ def api_bulk_release_emails():
                         if recipients:
                             first_recipient = recipients[0]
                             if '@' in first_recipient:
-                                recipient_domain = first_recipient.split('@')[1].lower()
+                                recipient_domain = first_recipient.split('@')[1].lower().rstrip('>').strip()
 
                         # Look up relay_host from client_domains table
                         relay_host = None
@@ -12248,6 +12253,10 @@ def api_quarantine_release(email_id):
         # Relay email using SMTP
         try:
             # Encode raw_email properly to handle non-ASCII characters (Japanese, etc.)
+            # Fix escaped newlines (stored as literal \n instead of actual newlines)
+            if isinstance(raw_email, str):
+                raw_email = raw_email.replace("\\r\\n", "\r\n").replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t")
+
             if isinstance(raw_email, str):
                 raw_email_bytes = raw_email.encode('utf-8')
             else:
@@ -14485,7 +14494,7 @@ def digest_action(token):
                     if recipients:
                         first_recipient = recipients[0]
                         if '@' in first_recipient:
-                            recipient_domain = first_recipient.split('@')[1].lower()
+                            recipient_domain = first_recipient.split('@')[1].lower().rstrip('>').strip()
 
                     relay_host = None
                     relay_port = 25
@@ -14743,15 +14752,15 @@ if __name__ == '__main__':
                 logger.info(f"Access via: https://<server-ip>:5500")
 
                 # Run with SSL on localhost only (Apache reverse proxy handles external access)
-                app.run(host='127.0.0.1', port=5500, debug=False, ssl_context=context)
+                app.run(host='0.0.0.0', port=5500, debug=False, ssl_context=context)
             except Exception as e:
                 logger.error(f"Failed to start HTTPS server: {e}")
                 logger.info("Falling back to HTTP mode")
-                app.run(host='127.0.0.1', port=5500, debug=False)
+                app.run(host='0.0.0.0', port=5500, debug=False)
         else:
             logger.warning(f"SSL certificates not found at {cert_path}")
             logger.info(f"Running in HTTP mode on port 5500")
-            app.run(host='127.0.0.1', port=5500, debug=False)
+            app.run(host='0.0.0.0', port=5500, debug=False)
     except Exception as e:
         logger.error(f"Failed to start Flask application: {e}")
         logger.error(traceback.format_exc())

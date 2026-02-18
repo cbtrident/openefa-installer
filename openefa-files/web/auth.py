@@ -476,57 +476,67 @@ def profile():
 @auth_bp.route('/change-password', methods=['GET', 'POST'])
 @login_required
 def change_password():
+    # Determine if current password is required (only for superadmin/admin)
+    requires_current = current_user.role in ('admin', 'superadmin')
+
     if request.method == 'POST':
         current_password = request.form.get('current_password', '')
         new_password = request.form.get('new_password', '')
         confirm_password = request.form.get('confirm_password', '')
-        
-        if not current_password or not new_password:
-            flash('Please fill in all fields.', 'error')
-            return render_template('auth/change_password.html')
-        
+
+        # Validate required fields
+        if not new_password:
+            flash('Please enter a new password.', 'error')
+            return render_template('auth/change_password.html', requires_current=requires_current)
+
+        if requires_current and not current_password:
+            flash('Please enter your current password.', 'error')
+            return render_template('auth/change_password.html', requires_current=requires_current)
+
         if new_password != confirm_password:
             flash('New passwords do not match.', 'error')
-            return render_template('auth/change_password.html')
-        
+            return render_template('auth/change_password.html', requires_current=requires_current)
+
+        # Password strength validation
         if len(new_password) < 8:
             flash('Password must be at least 8 characters long.', 'error')
-            return render_template('auth/change_password.html')
-        
-        # Verify current password
-        user, error = authenticate_user(current_user.email, current_password)
-        if not user:
-            flash('Current password is incorrect.', 'error')
-            return render_template('auth/change_password.html')
-        
+            return render_template('auth/change_password.html', requires_current=requires_current)
+
+        # Verify current password if required
+        if requires_current:
+            user, error = authenticate_user(current_user.email, current_password)
+            if not user:
+                flash('Current password is incorrect.', 'error')
+                return render_template('auth/change_password.html', requires_current=requires_current)
+
         # Update password
         try:
             conn = get_db_connection()
             cursor = conn.cursor()
-            
+
             new_password_hash = bcrypt.hashpw(new_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-            
+
             cursor.execute("""
                 UPDATE users SET password_hash = %s WHERE id = %s
             """, (new_password_hash, current_user.id))
-            
+
             # Log password change
             cursor.execute("""
                 INSERT INTO audit_log (user_id, action, details, ip_address)
                 VALUES (%s, 'PASSWORD_CHANGED', 'User changed password', %s)
             """, (current_user.id, request.remote_addr))
-            
+
             conn.commit()
             conn.close()
-            
+
             flash('Password changed successfully!', 'success')
             return redirect(url_for('auth.profile'))
-            
+
         except Exception as e:
             flash('Error changing password. Please try again.', 'error')
             print(f"Password change error: {e}")
-    
-    return render_template('auth/change_password.html')
+
+    return render_template('auth/change_password.html', requires_current=requires_current)
 
 def init_auth(app, rate_limiter=None):
     """Initialize authentication with Flask app"""
